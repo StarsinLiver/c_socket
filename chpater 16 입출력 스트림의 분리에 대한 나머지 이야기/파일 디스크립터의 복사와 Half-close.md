@@ -43,3 +43,106 @@ int dup2(int fildes , int fildes2); // 성공시 복사된 파일 디스크립�
 // fildes : 복사할 파일 디스크립터 전달
 // fildes2 : 명시적으로 지정할 파일 디스크립터의 정수 값 전달
 ```
+
+dup2 함수는 복사된 파일 디스크립터의 정수 값을 명시적으로 지정할 때 사용한다. 이 함수의 인자로 0보다 크고 프로세스 당 생성할 수 있는 파일 디스크립터의 수보다 작은 값을 전달하면 해당 값을 복사되는 파일 디스크립터의 정수 값으로 지정해준다.
+
+다음 예제에서는 시스템에 의해서 자동으로 열리는 표준출력을 의미하는 파일 디스크립터 1을 복사하여 복사된 파일 디스크립터를 이용해서 출력을 진행한다. 참고로 자동으로 열리는 파일 디스크립터 0,1,2 역시 소켓 기반의 파일 디스크립터와 차이가 없으므로 dup 함수의 기능확인을 목적으로 사용하기에 충분하다.
+
+```c
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char const *argv[])
+{
+  int cfd1, cfd2;
+  char str1[] = "Hi~ \n";
+  char str2[] = "It's nice day~ \n";
+
+  cfd1 = dup(1);
+  cfd2 = dup2(cfd1, 7);
+
+  printf("fd1 = %d , fd2 = %d \n", cfd1, cfd2);
+  write(cfd1, str1, sizeof(str1));
+  write(cfd2, str2, sizeof(str2));
+
+  close(cfd1);
+  close(cfd2);
+
+  write(1, str1, sizeof(str1));
+  close(1);
+  write(1, str2, sizeof(str2));
+
+  return 0;
+}
+```
+
+```
+fd1 = 3 , fd2 = 7
+Hi~
+It's nice day~
+Hi~
+```
+
+## 파일 디스크립터의 복사 후 스트림의 분리
+
+이제 끝으로 예제 sep_serv.c 와 sep_clnt.c 가 정상동작하도록 변경할 차례이다. 그런데 여기서 말하는 정상동작은 서버 측의 Half-close 진행으로 클라이언트가 전송하는 마지막 문자열이 수신되는 것을 의미한다. 물론 이를 위해서는 서버 측에서의 EOF 전송을 동반해야 한다. 그런데 EOF 의 전송은 어렵지 않기 때문에 예제를 통해서 함께 보자
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#define BUF_SIZE 1024
+
+int main(int argc, char const *argv[])
+{
+  int serv_sock, clnt_sock;
+  FILE *readfp;
+  FILE *writefp;
+
+  struct sockaddr_in serv_adr, clnt_adr;
+  socklen_t clnt_adr_sz;
+  char buf[BUF_SIZE] = {0};
+
+  serv_sock = socket(PF_INET, SOCK_STREAM, 0);
+  memset(&serv_adr, 0, sizeof(serv_adr));
+  serv_adr.sin_family = AF_INET;
+  serv_adr.sin_addr.s_addr = htonl(INADDR_ANY);
+  serv_adr.sin_port = 9190;
+
+  bind(serv_sock, (struct sockaddr *)&serv_adr, sizeof(serv_adr));
+  listen(serv_sock, 5);
+  clnt_adr_sz = sizeof(clnt_adr);
+
+  clnt_sock = accept(serv_sock, (struct sockaddr *)&clnt_adr, &clnt_adr_sz);
+
+  readfp = fdopen(clnt_sock, "r");
+  writefp = fdopen(dup(clnt_sock), "w");
+
+  fputs("FROM SERVER : HI ~ Client? \n", writefp);
+  fputs("I love all of the world \n", writefp);
+  fputs("You are awesome! \n", writefp);
+  fflush(writefp);
+
+  shutdown(fileno(writefp), SHUT_WR);
+  fclose(writefp);
+
+  fgets(buf, sizeof(buf), readfp);
+  fputs(buf, stdout);
+  fclose(readfp);
+  return 0;
+}
+```
+
+```
+[root@localhost chapter16]# ./sep_serv2
+FROM CLIENT : Thank you!
+```
+
+실행결관느 Half-close 상태에서 클라이언트로 EOF 가 전송되었음을 증명하고 있다. 따라서 이 예제를 통해서 다음 사실을 정리하기 바란다.
+
+"복사된 파일 디스크립터의 수에 상관없이 EOF 의 전송을 동반하는 Half-close 를 진행하기 위해서는 shutdown 함수를 호출해야 한다."
+
+이러한 shutdown 함수의 기능은 Chapter 10의 예제 echo_mpclient.c 에서도 활용한 바 있다. 당시에도 fork 함수 호출을 통해서 두 개의 파일 디스크립터가 존재하는 상황에서의 EOF 전송이 필요했었고 이를 위해서 shutdown 함수를 호출했었다.
